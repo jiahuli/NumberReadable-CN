@@ -34,7 +34,7 @@
 
 ## 下载
 
-> [GitHub Releases](https://github.com/jiahuli/kmbt-to-chinese/releases) 下载 `kmbt-to-chinese.exe`，双击即用，无控制台弹窗。
+> [Releases](https://github.com/jiahuli/NumberReadable-CN/releases) 下载 `number-readable.exe`（[v0.2 直链](https://github.com/jiahuli/NumberReadable-CN/releases/download/v0.2/number-readable.exe)），约 11 MB 单文件，双击即用，无控制台弹窗，目标机无需安装 Python。
 
 ## 数字缩写转换（API）
 

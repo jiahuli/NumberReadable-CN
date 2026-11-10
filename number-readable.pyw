@@ -4,9 +4,11 @@
 Windows 原生 UI，低占用，可调大小
 """
 
-import tkinter as tk
-from tkinter import ttk
+import math
 import re
+import tkinter as tk
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from tkinter import ttk
 
 # ── 中文数字转换 ────────────────────────────────────────────
 
@@ -113,7 +115,7 @@ def simplify_number(n: int) -> int:
     return int(keep + zeros)
 
 
-# ── 主窗口 ──────────────────────────────────────────────────
+# ── 数字缩写转换 ────────────────────────────────────────────
 
 UNITS = [
     ("K", "千",      1_000),
@@ -122,6 +124,76 @@ UNITS = [
     ("T", "兆",      1_000_000_000_000),
 ]
 
+# 缩写时的取整方式
+ROUNDING_TRUNC = "trunc"        # 截断：只少不多
+ROUNDING_HALF_UP = "round"      # 四舍五入：尽量贴近真实值
+
+_ROUNDING_MODES = {
+    ROUNDING_TRUNC: ROUND_DOWN,
+    ROUNDING_HALF_UP: ROUND_HALF_UP,
+}
+
+
+def to_compact_number(num: float, rounding: str = ROUNDING_TRUNC) -> str:
+    """把数值压成带英文单位缩写的紧凑形式。
+
+    单位取 K / M / B / T 中不超过该数值的最大一档，保留一位小数。
+    ``rounding`` 决定多出来的那位小数怎么处理：
+
+    - ``"trunc"``（默认，截断）：直接舍去，结果永远不大于真实值。
+      适合对外披露、成本与容量承诺、额度上限等"宁可说少不可说多"的场合。
+    - ``"round"``（四舍五入）：取最接近真实值的写法，进位到 1000.0
+      时会自动升一档，适合行情、报表概览、界面展示等只求量级一眼准确的地方。
+
+    末尾的 ".0" 省略；低于 1000 时原样返回；超过 T 时继续沿用 T。
+
+    >>> to_compact_number(1697507113)
+    '1.6B'
+    >>> to_compact_number(1697507113, rounding="round")
+    '1.7B'
+    >>> to_compact_number(999960000, rounding="round")
+    '1B'
+    >>> to_compact_number(1534000)
+    '1.5M'
+    >>> to_compact_number(1000)
+    '1K'
+    >>> to_compact_number(-1697507113)
+    '-1.6B'
+    """
+    if rounding not in _ROUNDING_MODES:
+        raise ValueError(f"未知的取舍方式：{rounding!r}，只支持 'trunc' 或 'round'")
+
+    if not math.isfinite(num):
+        return str(num)
+
+    if num < 0:
+        return "-" + to_compact_number(-num, rounding=rounding)
+
+    mode = _ROUNDING_MODES[rounding]
+
+    index = -1
+    for i, (_, _, multiplier) in enumerate(UNITS):
+        if num >= multiplier:
+            index = i
+
+    if index < 0:
+        return str(int(num)) if num == int(num) else f"{num:g}"
+
+    for i in range(index, len(UNITS)):
+        symbol, _, scale = UNITS[i]
+        # 用 Decimal 做取舍，避开 2900000/1e6 = 2.8999… 这类二进制浮点误差
+        tenths = (Decimal(str(num)) / Decimal(scale)).quantize(
+            Decimal("0.1"), rounding=mode,
+        )
+        # 四舍五入可能顶到 1000.0，需要升一档：999,999,999 → 1B
+        if tenths < 1000 or i == len(UNITS) - 1:
+            break
+
+    return f"{tenths:.1f}".rstrip("0").rstrip(".") + symbol
+
+
+# ── 主窗口 ──────────────────────────────────────────────────
+
 
 class NumberConverter:
     """数字转换器主窗口"""
@@ -129,8 +201,8 @@ class NumberConverter:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("数字转换器")
-        self.root.geometry("380x210")
-        self.root.minsize(280, 180)
+        self.root.geometry("380x240")
+        self.root.minsize(280, 230)
         self.root.resizable(True, True)
 
         # 居中显示
@@ -166,6 +238,15 @@ class NumberConverter:
             variable=self.simplify_var,
             command=self._convert,
         ).pack(side=tk.LEFT)
+
+        # 缩写取整方式：不勾=截断，勾上=四舍五入
+        self.round_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            top,
+            text="缩写四舍五入",
+            variable=self.round_var,
+            command=self._convert,
+        ).pack(side=tk.RIGHT)
 
         # ── 输入区 ──
         self.entry_var = tk.StringVar()
@@ -220,6 +301,15 @@ class NumberConverter:
         )
         self.num_label.pack(side=tk.LEFT)
 
+        # 缩写形式
+        row_compact = ttk.Frame(result_frame)
+        row_compact.pack(fill=tk.X)
+        ttk.Label(row_compact, text="缩写：", font=font_label, width=5).pack(side=tk.LEFT)
+        self.compact_label = ttk.Label(
+            row_compact, text="—", font=font_result, foreground="#107C10",
+        )
+        self.compact_label.pack(side=tk.LEFT)
+
         # ── 初始选中样式 ──
         self._update_button_style("M")
 
@@ -244,10 +334,12 @@ class NumberConverter:
     def _convert(self):
         raw = self.entry_var.get().strip()
         unit = self.unit_var.get()
+        rounding = ROUNDING_HALF_UP if self.round_var.get() else ROUNDING_TRUNC
 
         if not raw:
             self.num_label.config(text="—", foreground="#0078D4")
             self.cap_label.config(text="—", foreground="#C43E1C")
+            self.compact_label.config(text="—", foreground="#107C10")
             return
 
         try:
@@ -255,11 +347,13 @@ class NumberConverter:
         except ValueError:
             self.num_label.config(text="无效数字", foreground="red")
             self.cap_label.config(text="—", foreground="#C43E1C")
+            self.compact_label.config(text="—", foreground="#107C10")
             return
 
         if value < 0:
             self.num_label.config(text="请输入正数", foreground="red")
             self.cap_label.config(text="—", foreground="#C43E1C")
+            self.compact_label.config(text="—", foreground="#107C10")
             return
 
         multiplier = self._unit_multipliers[unit]
@@ -275,6 +369,10 @@ class NumberConverter:
                     foreground="#0078D4",
                 )
                 self.cap_label.config(text="（仅支持整数大写）", foreground="gray")
+                self.compact_label.config(
+                    text=to_compact_number(result, rounding=rounding),
+                    foreground="#107C10",
+                )
                 return
 
         # 精简模式：去掉零散尾数
@@ -284,6 +382,8 @@ class NumberConverter:
         self.num_label.config(text=format_number(int_result), foreground="#0078D4")
         chinese = to_chinese_upper(int_result)
         self.cap_label.config(text=chinese, foreground="#C43E1C")
+        compact = to_compact_number(int_result, rounding=rounding)
+        self.compact_label.config(text=compact, foreground="#107C10")
 
     def run(self):
         self.root.mainloop()

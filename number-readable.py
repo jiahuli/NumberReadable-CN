@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-数字转换器 - 将带单位的数字（K/M/B/T）转换为中文大写
+数字转换器 - 数字与中文数字双向转换
+
+- 输入 26 / 1.534 并选单位（K/M/B/T）→ 中文数字 + 千分位数字
+- 输入 二千六百万 这类中文数字 → 数字 + K/M/B/T 英文简写
+
 Windows 原生 UI，低占用，可调大小
 """
 
@@ -90,6 +94,75 @@ def to_chinese_upper(num: int) -> str:
         result = "零"
 
     return result
+
+
+# ── 中文数字解析（to_chinese_upper 的逆运算）──────────────────
+
+_CN_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+_CN_SMALL_UNITS = {"十": 10, "百": 100, "千": 1000}
+_CN_BIG_UNITS = (("兆", 10 ** 12), ("亿", 10 ** 8), ("万", 10 ** 4))
+
+# 输入里出现这些字符，就按中文数字解析
+CN_NUMERALS = "".join(_CN_DIGITS) + "".join(_CN_SMALL_UNITS) + "".join(
+    unit for unit, _ in _CN_BIG_UNITS
+) + "负"
+
+
+def _parse_cn_section(text: str) -> int:
+    """解析不含 万/亿/兆 的一段，如 "二千三百" → 2300"""
+    total = 0
+    number = 0
+    for ch in text:
+        if ch in _CN_DIGITS:
+            number = _CN_DIGITS[ch]
+        elif ch in _CN_SMALL_UNITS:
+            if number == 0:
+                number = 1          # "十五" 的 十 前面没有数字
+            total += number * _CN_SMALL_UNITS[ch]
+            number = 0
+        elif ch.isdigit():
+            number = int(ch)        # 容忍 "1亿" 这种混写
+        else:
+            raise ValueError(f"无法识别的字符：{ch!r}")
+    return total + number
+
+
+def chinese_to_number(text: str) -> int:
+    """把中文小写数字解析成整数，与 to_chinese_upper 互逆。
+
+    支持 零一二三四五六七八九两、十百千万亿兆，可带「负」前缀。
+    按严格读法解析（"两千三" 会得 2003，口语的 2300 不在支持范围内）。
+
+    >>> chinese_to_number("二千六百万")
+    26000000
+    >>> chinese_to_number("一亿六千九百七十五万")
+    169750000
+    >>> chinese_to_number("十五")
+    15
+    >>> chinese_to_number("一万亿")
+    1000000000000
+    >>> chinese_to_number("负一千")
+    -1000
+    """
+    raw = text.strip()
+    if not raw:
+        raise ValueError("请输入中文数字")
+
+    if raw.startswith("负"):
+        return -chinese_to_number(raw[1:])
+
+    # 大单位从大到小切分："一万亿" 先切 亿，"一亿二千万" 先切 亿再切 万
+    for unit, multiplier in _CN_BIG_UNITS:
+        if unit in raw:
+            head, _, tail = raw.partition(unit)
+            head_value = chinese_to_number(head) if head else 1
+            tail_value = chinese_to_number(tail) if tail else 0
+            return head_value * multiplier + tail_value
+
+    return _parse_cn_section(raw)
 
 
 def format_number(num: int) -> str:
@@ -342,6 +415,25 @@ class NumberConverter:
             self.compact_label.config(text="—", foreground="#107C10")
             return
 
+        # 反向输入：中文数字直接解析，不再乘单位
+        if any(ch in CN_NUMERALS for ch in raw):
+            try:
+                number = chinese_to_number(raw)
+            except ValueError:
+                self.num_label.config(text="无法识别的中文数字", foreground="red")
+                self.cap_label.config(text="—", foreground="#C43E1C")
+                self.compact_label.config(text="—", foreground="#107C10")
+                return
+
+            if number < 0:
+                self.num_label.config(text="请输入正数", foreground="red")
+                self.cap_label.config(text="—", foreground="#C43E1C")
+                self.compact_label.config(text="—", foreground="#107C10")
+                return
+
+            self._show_int(number, rounding)
+            return
+
         try:
             value = float(raw)
         except ValueError:
@@ -375,15 +467,18 @@ class NumberConverter:
                 )
                 return
 
-        # 精简模式：去掉零散尾数
-        if self.simplify_var.get():
-            int_result = simplify_number(int_result)
+        self._show_int(int_result, rounding)
 
-        self.num_label.config(text=format_number(int_result), foreground="#0078D4")
-        chinese = to_chinese_upper(int_result)
-        self.cap_label.config(text=chinese, foreground="#C43E1C")
-        compact = to_compact_number(int_result, rounding=rounding)
-        self.compact_label.config(text=compact, foreground="#107C10")
+    def _show_int(self, number: int, rounding: str):
+        """统一渲染整数结果：数字 / 中文 / 缩写"""
+        if self.simplify_var.get():
+            number = simplify_number(number)        # 精简模式：去掉零散尾数
+
+        self.num_label.config(text=format_number(number), foreground="#0078D4")
+        self.cap_label.config(text=to_chinese_upper(number), foreground="#C43E1C")
+        self.compact_label.config(
+            text=to_compact_number(number, rounding=rounding), foreground="#107C10",
+        )
 
     def run(self):
         self.root.mainloop()

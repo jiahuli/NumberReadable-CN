@@ -137,6 +137,50 @@ class TestRoundingModes(unittest.TestCase):
             app.root.destroy()
 
 
+class TestUiChineseInput(unittest.TestCase):
+    """界面反向输入：中文数字 → 数字 + 英文简写"""
+
+    def setUp(self):
+        self.app = nr.NumberConverter()
+        self.app.root.withdraw()
+
+    def tearDown(self):
+        self.app.root.destroy()
+
+    def test_chinese_input_gives_compact(self):
+        self.app.simplify_var.set(False)      # 关掉精简，看精确值
+        self.app.entry_var.set("二千六百万")
+        self.app._convert()
+        self.assertEqual(self.app.num_label.cget("text"), "26,000,000")
+        self.assertEqual(self.app.compact_label.cget("text"), "26M")
+
+        self.app.entry_var.set("一亿六千九百七十五万")
+        self.app._convert()
+        self.assertEqual(self.app.num_label.cget("text"), "169,750,000")
+        self.assertEqual(self.app.compact_label.cget("text"), "169.7M")
+
+    def test_simplify_still_applies(self):
+        self.app.simplify_var.set(True)
+        self.app.entry_var.set("一亿六千九百七十五万")
+        self.app._convert()
+        self.assertEqual(self.app.num_label.cget("text"), "169,000,000")
+        self.assertEqual(self.app.compact_label.cget("text"), "169M")
+
+    def test_chinese_input_ignores_unit_buttons(self):
+        # 中文数字本身已含量级，不应再乘单位
+        self.app.simplify_var.set(False)
+        self.app.entry_var.set("二千六百万")
+        self.app._select_unit("T")
+        self.app._convert()
+        self.assertEqual(self.app.compact_label.cget("text"), "26M")
+
+    def test_invalid_chinese_shows_hint(self):
+        self.app.entry_var.set("二百X")
+        self.app._convert()
+        self.assertEqual(self.app.num_label.cget("text"), "无法识别的中文数字")
+        self.assertEqual(self.app.compact_label.cget("text"), "—")
+
+
 def _parse_compact(text: str) -> float:
     """把 '1.6B' 之类的缩写还原成数值，供断言使用"""
     suffix = text[-1]
@@ -144,6 +188,49 @@ def _parse_compact(text: str) -> float:
     if suffix in scale:
         return float(text[:-1]) * scale[suffix]
     return float(text)
+
+
+class TestChineseToNumber(unittest.TestCase):
+    """chinese_to_number：中文数字 → 整数（核心需求：二千六百万 → 26M）"""
+
+    def test_core_case(self):
+        # 用户要的方向：中文数字 → 英文简写
+        self.assertEqual(nr.chinese_to_number("二千六百万"), 26000000)
+        self.assertEqual(nr.to_compact_number(nr.chinese_to_number("二千六百万")), "26M")
+
+    def test_typical_values(self):
+        self.assertEqual(nr.chinese_to_number("十五"), 15)
+        self.assertEqual(nr.chinese_to_number("一十"), 10)
+        self.assertEqual(nr.chinese_to_number("一百零五"), 105)
+        self.assertEqual(nr.chinese_to_number("二千三百"), 2300)
+        self.assertEqual(nr.chinese_to_number("一亿六千九百七十五万"), 169750000)
+        self.assertEqual(nr.chinese_to_number("零"), 0)
+
+    def test_big_units_nesting(self):
+        self.assertEqual(nr.chinese_to_number("一万亿"), 10 ** 12)
+        self.assertEqual(nr.chinese_to_number("一兆二千亿"), 12 * 10 ** 11)
+        self.assertEqual(nr.chinese_to_number("十二亿三千万"), 1230000000)
+
+    def test_prefix_and_aliases(self):
+        self.assertEqual(nr.chinese_to_number("负一千"), -1000)
+        self.assertEqual(nr.chinese_to_number("两千"), 2000)
+        self.assertEqual(nr.chinese_to_number(" 三亿 "), 300000000)
+
+    def test_mixed_arabic(self):
+        self.assertEqual(nr.chinese_to_number("1亿"), 100000000)
+
+    def test_invalid_input(self):
+        with self.assertRaises(ValueError):
+            nr.chinese_to_number("")
+        with self.assertRaises(ValueError):
+            nr.chinese_to_number("abc")
+        with self.assertRaises(ValueError):
+            nr.chinese_to_number("二百X")
+
+    def test_round_trip_with_to_chinese_upper(self):
+        for value in (0, 7, 15, 105, 2300, 26000000, 169750000, 1230000000):
+            text = nr.to_chinese_upper(value)
+            self.assertEqual(nr.chinese_to_number(text), value, f"回环失败：{value} → {text}")
 
 
 class TestExistingHelpers(unittest.TestCase):

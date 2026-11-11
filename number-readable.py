@@ -2,8 +2,9 @@
 """
 数字转换器 - 数字与中文数字双向转换
 
-- 输入 26 / 1.534 并选单位（K/M/B/T）→ 中文数字 + 千分位数字
-- 输入 二千六百万 这类中文数字 → 数字 + K/M/B/T 英文简写
+- 输入 26054144（纯数字）→ 英文简写 26.05M、中文 两千六百零五万四千一百四十四
+- 输入 26.05M（英文简写）→ 数字 26,050,000、中文 两千六百零五万
+- 输入 两千六百零五万（中文）→ 数字 26,050,000、缩写 26.05M
 
 Windows 原生 UI，低占用，可调大小
 """
@@ -11,7 +12,7 @@ Windows 原生 UI，低占用，可调大小
 import math
 import re
 import tkinter as tk
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from tkinter import ttk
 
 # ── 中文数字转换 ────────────────────────────────────────────
@@ -21,8 +22,12 @@ UNITS_SMALL = ["", "十", "百", "千"]
 UNITS_BIG = ["", "万", "亿", "兆"]
 
 
-def _convert_4digits(n: int) -> str:
-    """转换最多四位数字为中文（保留一十）"""
+def _convert_4digits(n: int, *, use_liang: bool = True) -> str:
+    """转换最多四位数字为中文（保留一十）
+
+    use_liang=True 时 2 在百/千位写作「两」（两千、两百），符合口语习惯；
+    在十位和个位仍写「二」（二十、二）。
+    """
     if n == 0:
         return "零"
 
@@ -31,7 +36,10 @@ def _convert_4digits(n: int) -> str:
         digit = n % 10
         n //= 10
         if digit != 0:
-            parts.append(DIGITS[digit] + UNITS_SMALL[i])
+            if use_liang and digit == 2 and i >= 2:
+                parts.append("两" + UNITS_SMALL[i])
+            else:
+                parts.append(DIGITS[digit] + UNITS_SMALL[i])
         else:
             if parts and parts[-1] != "零":
                 parts.append("零")
@@ -42,25 +50,39 @@ def _convert_4digits(n: int) -> str:
     return "".join(reversed(parts))
 
 
-def _convert_group(n: int, *, is_most_significant: bool = False) -> str:
+def _convert_group(
+    n: int, *, is_most_significant: bool = False, use_liang: bool = True,
+) -> str:
     """转换四位数字为一组。
 
     is_most_significant=True 时 "一十" 简化为 "十"（如 十万、十亿）；
     内部组保留 "一十"（如 十万零一十、一亿零一十万）。
     """
-    s = _convert_4digits(n)
+    s = _convert_4digits(n, use_liang=use_liang)
     if is_most_significant and s.startswith("一十"):
         s = s[1:]
     return s
 
 
-def to_chinese_upper(num: int) -> str:
-    """将整数转为中文大写"""
+def to_chinese_upper(num: int, *, use_liang: bool = True) -> str:
+    """将整数转为中文数字（一二三小写体）。
+
+    >>> to_chinese_upper(26050000)
+    '两千六百零五万'
+    >>> to_chinese_upper(1530000)
+    '一百五十三万'
+    >>> to_chinese_upper(20000)
+    '两万'
+    >>> to_chinese_upper(20)
+    '二十'
+    >>> to_chinese_upper(-1000)
+    '负一千'
+    """
     if num == 0:
         return "零"
 
     if num < 0:
-        return "负" + to_chinese_upper(-num)
+        return "负" + to_chinese_upper(-num, use_liang=use_liang)
 
     groups = []
     n = num
@@ -76,7 +98,10 @@ def to_chinese_upper(num: int) -> str:
                 result_parts.append("零")
         else:
             is_ms = (i == len(groups) - 1)
-            text = _convert_group(g, is_most_significant=is_ms)
+            text = _convert_group(g, is_most_significant=is_ms, use_liang=use_liang)
+            # 整组就是 2：两万、两亿（二千/二百 已在 _convert_4digits 处理）
+            if use_liang and g == 2 and i > 0:
+                text = "两"
 
             if result_parts and g < 1000:
                 result_parts.append("零")
@@ -112,7 +137,7 @@ CN_NUMERALS = "".join(_CN_DIGITS) + "".join(_CN_SMALL_UNITS) + "".join(
 
 
 def _parse_cn_section(text: str) -> int:
-    """解析不含 万/亿/兆 的一段，如 "二千三百" → 2300"""
+    """解析不含 万/亿/兆 的一段，如 "两千三百" → 2300"""
     total = 0
     number = 0
     for ch in text:
@@ -131,17 +156,15 @@ def _parse_cn_section(text: str) -> int:
 
 
 def chinese_to_number(text: str) -> int:
-    """把中文小写数字解析成整数，与 to_chinese_upper 互逆。
+    """把中文数字解析成整数，与 to_chinese_upper 互逆。
 
     支持 零一二三四五六七八九两、十百千万亿兆，可带「负」前缀。
     按严格读法解析（"两千三" 会得 2003，口语的 2300 不在支持范围内）。
 
-    >>> chinese_to_number("二千六百万")
-    26000000
+    >>> chinese_to_number("两千六百零五万")
+    26050000
     >>> chinese_to_number("一亿六千九百七十五万")
     169750000
-    >>> chinese_to_number("十五")
-    15
     >>> chinese_to_number("一万亿")
     1000000000000
     >>> chinese_to_number("负一千")
@@ -197,6 +220,8 @@ UNITS = [
     ("T", "兆",      1_000_000_000_000),
 ]
 
+_UNIT_SCALES = {sym: mult for sym, _, mult in UNITS}
+
 # 缩写时的取整方式
 ROUNDING_TRUNC = "trunc"        # 截断：只少不多
 ROUNDING_HALF_UP = "round"      # 四舍五入：尽量贴近真实值
@@ -206,32 +231,37 @@ _ROUNDING_MODES = {
     ROUNDING_HALF_UP: ROUND_HALF_UP,
 }
 
+# 26.05M / 1.5K / 3b 这类输入
+_COMPACT_PATTERN = re.compile(
+    r"^\s*([+-]?\d+(?:\.\d+)?)\s*([KMBT])\s*$", re.IGNORECASE
+)
+
 
 def to_compact_number(num: float, rounding: str = ROUNDING_TRUNC) -> str:
-    """把数值压成带英文单位缩写的紧凑形式。
+    """把数值压成带英文单位缩写的紧凑形式，保留两位小数。
 
-    单位取 K / M / B / T 中不超过该数值的最大一档，保留一位小数。
-    ``rounding`` 决定多出来的那位小数怎么处理：
+    单位取 K / M / B / T 中不超过该数值的最大一档。
+    ``rounding`` 决定多出来的小数怎么处理：
 
     - ``"trunc"``（默认，截断）：直接舍去，结果永远不大于真实值。
       适合对外披露、成本与容量承诺、额度上限等"宁可说少不可说多"的场合。
-    - ``"round"``（四舍五入）：取最接近真实值的写法，进位到 1000.0
-      时会自动升一档，适合行情、报表概览、界面展示等只求量级一眼准确的地方。
+    - ``"round"``（四舍五入）：取最接近真实值的写法，进位到 1000.00
+      时会自动升一档，适合行情、报表概览、界面展示等。
 
-    末尾的 ".0" 省略；低于 1000 时原样返回；超过 T 时继续沿用 T。
+    末尾的 ".00" 省略；低于 1000 时原样返回；超过 T 时继续沿用 T。
 
+    >>> to_compact_number(26054144)
+    '26.05M'
     >>> to_compact_number(1697507113)
-    '1.6B'
+    '1.69B'
     >>> to_compact_number(1697507113, rounding="round")
     '1.7B'
-    >>> to_compact_number(999960000, rounding="round")
+    >>> to_compact_number(999995000, rounding="round")
     '1B'
-    >>> to_compact_number(1534000)
-    '1.5M'
     >>> to_compact_number(1000)
     '1K'
-    >>> to_compact_number(-1697507113)
-    '-1.6B'
+    >>> to_compact_number(-26054144)
+    '-26.05M'
     """
     if rounding not in _ROUNDING_MODES:
         raise ValueError(f"未知的取舍方式：{rounding!r}，只支持 'trunc' 或 'round'")
@@ -255,14 +285,31 @@ def to_compact_number(num: float, rounding: str = ROUNDING_TRUNC) -> str:
     for i in range(index, len(UNITS)):
         symbol, _, scale = UNITS[i]
         # 用 Decimal 做取舍，避开 2900000/1e6 = 2.8999… 这类二进制浮点误差
-        tenths = (Decimal(str(num)) / Decimal(scale)).quantize(
-            Decimal("0.1"), rounding=mode,
+        cents = (Decimal(str(num)) / Decimal(scale)).quantize(
+            Decimal("0.01"), rounding=mode,
         )
-        # 四舍五入可能顶到 1000.0，需要升一档：999,999,999 → 1B
-        if tenths < 1000 or i == len(UNITS) - 1:
+        # 四舍五入可能顶到 1000.00，需要升一档：999,995,000 → 1B
+        if cents < 1000 or i == len(UNITS) - 1:
             break
 
-    return f"{tenths:.1f}".rstrip("0").rstrip(".") + symbol
+    return f"{cents:.2f}".rstrip("0").rstrip(".") + symbol
+
+
+def parse_compact(text: str) -> Decimal:
+    """把 26.05M / 1.5K 这类英文简写解析回数值（用 Decimal，不经浮点）。
+
+    >>> parse_compact("26.05M")
+    Decimal('26050000.00')
+    >>> int(parse_compact("1.5K"))
+    1500
+    >>> int(parse_compact("3b"))
+    3000000000
+    """
+    match = _COMPACT_PATTERN.match(text)
+    if not match:
+        raise ValueError(f"不是合法的英文简写：{text!r}，形如 26.05M")
+    number, symbol = match.groups()
+    return Decimal(number) * Decimal(_UNIT_SCALES[symbol.upper()])
 
 
 # ── 主窗口 ──────────────────────────────────────────────────
@@ -289,7 +336,6 @@ class NumberConverter:
         self.root.geometry(f"+{x}+{y}")
 
         self._unit_buttons: list[ttk.Button] = []
-        self._unit_multipliers: dict[str, int] = {}
         self._build_ui()
 
     def _build_ui(self):
@@ -300,11 +346,12 @@ class NumberConverter:
         main = ttk.Frame(self.root, padding=16)
         main.pack(fill=tk.BOTH, expand=True)
 
-        # ── 顶栏：精简开关（替代标题，节省空间）──
+        # ── 顶栏：两个开关（替代标题，节省空间）──
         top = ttk.Frame(main)
         top.pack(fill=tk.X, pady=(0, 8))
 
-        self.simplify_var = tk.BooleanVar(value=True)
+        # 精简默认关闭：开了会把 26054144 抹成 26000000，26.05M 就不准了
+        self.simplify_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             top,
             text="精简（去掉零散尾数）",
@@ -331,19 +378,14 @@ class NumberConverter:
         )
         self.entry.pack(fill=tk.X)
 
-        # ── 单位按钮组 ──
+        # ── 单位按钮组：点一下给输入补/换后缀 ──
         btn_frame = ttk.Frame(main)
         btn_frame.pack(fill=tk.X, pady=(8, 6))
 
-        btn_frame.columnconfigure(0, weight=1)
-        btn_frame.columnconfigure(1, weight=1)
-        btn_frame.columnconfigure(2, weight=1)
-        btn_frame.columnconfigure(3, weight=1)
+        for idx in range(4):
+            btn_frame.columnconfigure(idx, weight=1)
 
-        self.unit_var = tk.StringVar(value="M")
-
-        for idx, (sym, label, mult) in enumerate(UNITS):
-            self._unit_multipliers[sym] = mult
+        for idx, (sym, label, _) in enumerate(UNITS):
             btn = ttk.Button(
                 btn_frame,
                 text=f"{sym}\n{label}",
@@ -352,20 +394,18 @@ class NumberConverter:
             btn.grid(row=0, column=idx, sticky="ew", padx=1)
             self._unit_buttons.append(btn)
 
-        # ── 结果区（大写在上，数字在下）──
+        # ── 结果区（中文在上，数字居中，缩写在下）──
         result_frame = ttk.Frame(main)
         result_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 中文大写（字号更大，放上面避免缩小时被裁切）
         row_cap = ttk.Frame(result_frame)
         row_cap.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(row_cap, text="大写：", font=font_label, width=5).pack(side=tk.LEFT)
+        ttk.Label(row_cap, text="中文：", font=font_label, width=5).pack(side=tk.LEFT)
         self.cap_label = ttk.Label(
             row_cap, text="—", font=font_big, foreground="#C43E1C",
         )
         self.cap_label.pack(side=tk.LEFT)
 
-        # 数字形式
         row_num = ttk.Frame(result_frame)
         row_num.pack(fill=tk.X)
         ttk.Label(row_num, text="数字：", font=font_label, width=5).pack(side=tk.LEFT)
@@ -374,7 +414,6 @@ class NumberConverter:
         )
         self.num_label.pack(side=tk.LEFT)
 
-        # 缩写形式
         row_compact = ttk.Frame(result_frame)
         row_compact.pack(fill=tk.X)
         ttk.Label(row_compact, text="缩写：", font=font_label, width=5).pack(side=tk.LEFT)
@@ -383,18 +422,20 @@ class NumberConverter:
         )
         self.compact_label.pack(side=tk.LEFT)
 
-        # ── 初始选中样式 ──
-        self._update_button_style("M")
+        self._update_button_style("")
 
         # ── 自动转换 ──
         self.entry_var.trace_add("write", lambda *_: self._convert())
-        self.unit_var.trace_add("write", lambda *_: self._convert())
 
         self.entry.focus_set()
 
     def _select_unit(self, sym: str):
-        self.unit_var.set(sym)
-        self._update_button_style(sym)
+        """点单位按钮 = 给输入框补上或替换后缀，不乘隐藏倍数。"""
+        raw = self.entry_var.get().strip()
+        base = re.sub(r"[KMBT]\s*$", "", raw, flags=re.IGNORECASE)
+        if not base:
+            base = "1"
+        self.entry_var.set(f"{base}{sym}")
 
     def _update_button_style(self, active: str):
         for btn in self._unit_buttons:
@@ -404,78 +445,79 @@ class NumberConverter:
             else:
                 btn.state(["!pressed"])
 
+    def _clear(self):
+        self.num_label.config(text="—", foreground="#0078D4")
+        self.cap_label.config(text="—", foreground="#C43E1C")
+        self.compact_label.config(text="—", foreground="#107C10")
+
+    def _error(self, message: str):
+        self.num_label.config(text=message, foreground="red")
+        self.cap_label.config(text="—", foreground="#C43E1C")
+        self.compact_label.config(text="—", foreground="#107C10")
+
     def _convert(self):
         raw = self.entry_var.get().strip()
-        unit = self.unit_var.get()
         rounding = ROUNDING_HALF_UP if self.round_var.get() else ROUNDING_TRUNC
 
         if not raw:
-            self.num_label.config(text="—", foreground="#0078D4")
-            self.cap_label.config(text="—", foreground="#C43E1C")
-            self.compact_label.config(text="—", foreground="#107C10")
+            self._clear()
+            self._update_button_style("")
             return
 
-        # 反向输入：中文数字直接解析，不再乘单位
+        # ① 中文数字：两千六百零五万
         if any(ch in CN_NUMERALS for ch in raw):
+            self._update_button_style("")
             try:
                 number = chinese_to_number(raw)
             except ValueError:
-                self.num_label.config(text="无法识别的中文数字", foreground="red")
-                self.cap_label.config(text="—", foreground="#C43E1C")
-                self.compact_label.config(text="—", foreground="#107C10")
+                self._error("无法识别的中文数字")
                 return
-
-            if number < 0:
-                self.num_label.config(text="请输入正数", foreground="red")
-                self.cap_label.config(text="—", foreground="#C43E1C")
-                self.compact_label.config(text="—", foreground="#107C10")
-                return
-
             self._show_int(number, rounding)
             return
 
+        # ② 英文简写：26.05M
+        if _COMPACT_PATTERN.match(raw):
+            self._update_button_style(raw.strip()[-1].upper())
+            self._show_amount(parse_compact(raw), rounding)
+            return
+
+        # ③ 纯数字：26054144，按数值本身算，不乘单位
+        self._update_button_style("")
         try:
-            value = float(raw)
-        except ValueError:
-            self.num_label.config(text="无效数字", foreground="red")
-            self.cap_label.config(text="—", foreground="#C43E1C")
-            self.compact_label.config(text="—", foreground="#107C10")
+            amount = Decimal(raw)
+        except InvalidOperation:
+            self._error("无效数字")
+            return
+        self._show_amount(amount, rounding)
+
+    def _show_amount(self, amount: Decimal, rounding: str):
+        if not amount.is_finite():
+            self._error("无效数字")
+            return
+        if amount < 0:
+            self._error("请输入正数")
             return
 
-        if value < 0:
-            self.num_label.config(text="请输入正数", foreground="red")
-            self.cap_label.config(text="—", foreground="#C43E1C")
-            self.compact_label.config(text="—", foreground="#107C10")
+        if amount == amount.to_integral_value():
+            self._show_int(int(amount), rounding)
             return
 
-        multiplier = self._unit_multipliers[unit]
-        result = value * multiplier
-
-        if result == int(result):
-            int_result = int(result)
-        else:
-            int_result = int(round(result))
-            if abs(int_result - result) > 0.001:
-                self.num_label.config(
-                    text=f"{result:,.6f}".rstrip("0").rstrip("."),
-                    foreground="#0078D4",
-                )
-                self.cap_label.config(text="（仅支持整数大写）", foreground="gray")
-                self.compact_label.config(
-                    text=to_compact_number(result, rounding=rounding),
-                    foreground="#107C10",
-                )
-                return
-
-        self._show_int(int_result, rounding)
+        # 带小数的数值没有对应的中文写法，数字和缩写照常给
+        self.num_label.config(text=f"{amount.normalize():,f}", foreground="#0078D4")
+        self.cap_label.config(text="（仅支持整数中文）", foreground="gray")
+        self.compact_label.config(
+            text=to_compact_number(amount, rounding=rounding), foreground="#107C10",
+        )
 
     def _show_int(self, number: int, rounding: str):
-        """统一渲染整数结果：数字 / 中文 / 缩写"""
+        """统一渲染整数结果：中文 / 数字 / 缩写"""
         if self.simplify_var.get():
             number = simplify_number(number)        # 精简模式：去掉零散尾数
 
+        self.cap_label.config(
+            text=to_chinese_upper(number), foreground="#C43E1C",
+        )
         self.num_label.config(text=format_number(number), foreground="#0078D4")
-        self.cap_label.config(text=to_chinese_upper(number), foreground="#C43E1C")
         self.compact_label.config(
             text=to_compact_number(number, rounding=rounding), foreground="#107C10",
         )
